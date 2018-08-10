@@ -1,0 +1,929 @@
+diff -ruN usr/src/include/minix/callnr.h usr2/src/include/minix/callnr.h
+--- usr/src/include/minix/callnr.h	2013-02-15 06:18:13.000000000 -0500
++++ usr2/src/include/minix/callnr.h	2017-11-30 15:25:27.000000000 -0500
+@@ -66,6 +66,9 @@
+ #define GETMCONTEXT       67
+ #define SETMCONTEXT       68
+ 
++#define PRINTMSG          69
++#define GETACCESSLEVEL	  70
++
+ /* Posix signal handling. */
+ #define SIGACTION	  71
+ #define SIGSUSPEND	  72
+@@ -76,6 +79,11 @@
+ #define REBOOT		  76
+ #define SVRCTL		  77
+ #define SYSUNAME	  78
++
++#define SETACCESSLEVEL    79
++
++
++
+ #define GETDENTS	  80	/* to VFS */
+ #define LLSEEK		  81	/* to VFS */
+ #define FSTATFS	 	  82	/* to VFS */
+@@ -93,6 +101,9 @@
+ #define FTRUNCATE	  94	/* to VFS */
+ #define FCHMOD		  95	/* to VFS */
+ #define FCHOWN		  96	/* to VFS */
++
++
++
+ #define SPROF             98    /* to PM */
+ #define CPROF             99    /* to PM */
+ 
+@@ -100,7 +111,9 @@
+ #define PM_NEWEXEC	100	/* from VFS or RS to PM: new exec */
+ #define SRV_FORK  	101	/* to PM: special fork call for RS */
+ #define EXEC_RESTART	102	/* to PM: final part of exec for RS */
++#define GETCLASSLEVEL	103	/* from PM to VFS to get classification level */
+ #define GETPROCNR	104	/* to PM */
++#define SETCLASSLEVEL	105	/* from PM to VFS */
+ #define ISSETUGID	106	/* to PM: ask if process is tainted */
+ #define GETEPINFO_O	107	/* to PM: get pid/uid/gid of an endpoint */
+ #define SRV_KILL  	111	/* to PM: special kill call for RS */
+diff -ruN usr/src/include/minix/vfsif.h usr2/src/include/minix/vfsif.h
+--- usr/src/include/minix/vfsif.h	2013-02-15 06:18:13.000000000 -0500
++++ usr2/src/include/minix/vfsif.h	2017-12-05 15:09:41.000000000 -0500
+@@ -124,8 +124,9 @@
+ #define REQ_RDLINK	(VFS_BASE + 30)
+ #define REQ_GETDENTS	(VFS_BASE + 31)
+ #define REQ_STATVFS	(VFS_BASE + 32)
++#define REQ_SETCLASS	(VFS_BASE + 33)
+ 
+-#define NREQS			    33
++#define NREQS			    34
+ 
+ #define IS_VFS_RQ(type) (((type) & ~0xff) == VFS_BASE)
+ 
+diff -ruN usr/src/include/unistd.h usr2/src/include/unistd.h
+--- usr/src/include/unistd.h	2013-02-15 06:18:13.000000000 -0500
++++ usr2/src/include/unistd.h	2017-10-17 13:52:31.000000000 -0400
+@@ -436,6 +436,8 @@
+ extern	 int optreset;		/* getopt(3) external variable */
+ extern	 char *suboptarg;	/* getsubopt(3) external variable */
+ #endif
++int      set_access_level(int pid, int level); 
++int      get_access_level(int pid);
+ 
+ __END_DECLS
+ 
+diff -ruN usr/src/lib/libc/sys-minix/getaccesslevel.c usr2/src/lib/libc/sys-minix/getaccesslevel.c
+--- usr/src/lib/libc/sys-minix/getaccesslevel.c	1969-12-31 19:00:00.000000000 -0500
++++ usr2/src/lib/libc/sys-minix/getaccesslevel.c	2017-10-16 23:09:33.000000000 -0400
+@@ -0,0 +1,10 @@
++#include <lib.h>      // provides _syscall and message
++#include <unistd.h>   // provides function prototype (see step 1 below)
++
++int get_access_level(int pid) {
++    message m;      // Minix message to pass parameters to a system call
++    
++    m.m1_i1 = pid;  // set first integer of message to val
++        
++    return _syscall(PM_PROC_NR, GETACCESSLEVEL, &m);  // invoke underlying system call
++}
+\ No newline at end of file
+diff -ruN usr/src/lib/libc/sys-minix/getclassification.c usr2/src/lib/libc/sys-minix/getclassification.c
+--- usr/src/lib/libc/sys-minix/getclassification.c	1969-12-31 19:00:00.000000000 -0500
++++ usr2/src/lib/libc/sys-minix/getclassification.c	2017-12-10 12:51:33.000000000 -0500
+@@ -0,0 +1,49 @@
++#include <lib.h>      // provides _syscall and message
++#include <unistd.h>   // provides function prototype (see step 1 below)
++#include <stdio.h>
++#include <fcntl.h>
++
++int get_classification(const char * filename) {
++    message m;  // Minix uses message to pass parameters to a system call
++    FILE * filepo;
++
++    char c;
++    if((filepo = fopen(filename, "r")) == NULL){
++	if((filepo = fopen(filename, "w")) == NULL){
++		printf("%s\n", "file does not exist or permissions are non existant");
++		return -1;
++	}
++        fprintf(filepo,"");
++    }
++    else{
++	c = fgetc(filepo);
++    	while (c != EOF)
++    	{
++        	//printf ("%c", c);
++        	c = fgetc(filepo);
++    	}
++    }
++
++    int filedes = filepo->_file;
++    
++    int accessVal = access(filename, R_OK);
++    if(accessVal == -1) {
++    	return -1;
++    }
++
++    printf("FILEDES:%d\n", filedes);
++
++    m.m1_i1 = filedes;
++    
++    int value = syscall(VFS_PROC_NR, GETCLASSLEVEL, &m);
++        /* _syscall leads to the system server identified by PM_PRO_NR (the PM
++         * server process) invoking the function identified by call number 
++         * PRINTMSG with parameters in the message copied to address &m
++         */ 
++
++    //printf("THE VALUE AT TEST:%d\n", value);
++
++    return value;
++
++    fclose(filepo);  
++}
+\ No newline at end of file
+diff -ruN usr/src/lib/libc/sys-minix/intergetaccess.c usr2/src/lib/libc/sys-minix/intergetaccess.c
+--- usr/src/lib/libc/sys-minix/intergetaccess.c	1969-12-31 19:00:00.000000000 -0500
++++ usr2/src/lib/libc/sys-minix/intergetaccess.c	2017-10-17 15:30:52.000000000 -0400
+@@ -0,0 +1,6 @@
++#include <lib.h>      // provides _syscall and message
++#include <unistd.h>   // provides function prototype (see step 1 below)
++
++int interpret_get_access_result(int retval, message m) {
++    return retval;
++}
+\ No newline at end of file
+diff -ruN usr/src/lib/libc/sys-minix/intersetaccess.c usr2/src/lib/libc/sys-minix/intersetaccess.c
+--- usr/src/lib/libc/sys-minix/intersetaccess.c	1969-12-31 19:00:00.000000000 -0500
++++ usr2/src/lib/libc/sys-minix/intersetaccess.c	2017-10-17 15:31:09.000000000 -0400
+@@ -0,0 +1,6 @@
++#include <lib.h>      // provides _syscall and message
++#include <unistd.h>   // provides function prototype (see step 1 below)
++
++int interpret_set_access_result(int retval, message m) {    
++    return retval;
++}
+\ No newline at end of file
+diff -ruN usr/src/lib/libc/sys-minix/Makefile.inc usr2/src/lib/libc/sys-minix/Makefile.inc
+--- usr/src/lib/libc/sys-minix/Makefile.inc	2013-02-15 06:18:14.000000000 -0500
++++ usr2/src/lib/libc/sys-minix/Makefile.inc	2017-12-08 11:46:11.000000000 -0500
+@@ -16,7 +16,10 @@
+ 	vectorio.c shutdown.c sigaction.c sigpending.c sigreturn.c sigsuspend.c\
+ 	sigprocmask.c socket.c socketpair.c stat.c statvfs.c symlink.c \
+ 	sync.c syscall.c sysuname.c truncate.c umask.c unlink.c write.c \
+-	_exit.c _ucontext.c environ.c __getcwd.c vfork.c sizeup.c init.c
++	_exit.c _ucontext.c environ.c __getcwd.c vfork.c sizeup.c init.c \
++        setaccesslevel.c getaccesslevel.c retrsetaccess.c retrgetaccess.c \
++        retrsetaccessmessage.c retrgetaccessmessage.c intergetaccess.c \
++        intersetaccess.c getclassification.c setclassification.c
+ 
+ # Minix specific syscalls.
+ SRCS+= cprofile.c lseek64.c sprofile.c _mcontext.c
+diff -ruN usr/src/lib/libc/sys-minix/retrgetaccess.c usr2/src/lib/libc/sys-minix/retrgetaccess.c
+--- usr/src/lib/libc/sys-minix/retrgetaccess.c	1969-12-31 19:00:00.000000000 -0500
++++ usr2/src/lib/libc/sys-minix/retrgetaccess.c	2017-10-16 23:11:38.000000000 -0400
+@@ -0,0 +1,6 @@
++#include <lib.h>      // provides _syscall and message
++#include <unistd.h>   // provides function prototype (see step 1 below)
++
++int retrieve_get_access_callnum() {
++    return GETACCESSLEVEL;
++}
+\ No newline at end of file
+diff -ruN usr/src/lib/libc/sys-minix/retrgetaccessmessage.c usr2/src/lib/libc/sys-minix/retrgetaccessmessage.c
+--- usr/src/lib/libc/sys-minix/retrgetaccessmessage.c	1969-12-31 19:00:00.000000000 -0500
++++ usr2/src/lib/libc/sys-minix/retrgetaccessmessage.c	2017-10-16 23:18:46.000000000 -0400
+@@ -0,0 +1,10 @@
++#include <lib.h>      // provides _syscall and message
++#include <unistd.h>   // provides function prototype (see step 1 below)
++
++message retrieve_get_access_message(int pid) {
++    message m;      // Minix message to pass parameters to a system call
++    
++    m.m1_i1 = pid;  // set first integer of message to val
++
++    return m;
++}
+\ No newline at end of file
+diff -ruN usr/src/lib/libc/sys-minix/retrsetaccess.c usr2/src/lib/libc/sys-minix/retrsetaccess.c
+--- usr/src/lib/libc/sys-minix/retrsetaccess.c	1969-12-31 19:00:00.000000000 -0500
++++ usr2/src/lib/libc/sys-minix/retrsetaccess.c	2017-10-16 23:11:07.000000000 -0400
+@@ -0,0 +1,6 @@
++#include <lib.h>      // provides _syscall and message
++#include <unistd.h>   // provides function prototype (see step 1 below)
++
++int retrieve_set_access_callnum() {
++    return SETACCESSLEVEL;
++}
+\ No newline at end of file
+diff -ruN usr/src/lib/libc/sys-minix/retrsetaccessmessage.c usr2/src/lib/libc/sys-minix/retrsetaccessmessage.c
+--- usr/src/lib/libc/sys-minix/retrsetaccessmessage.c	1969-12-31 19:00:00.000000000 -0500
++++ usr2/src/lib/libc/sys-minix/retrsetaccessmessage.c	2017-10-16 23:20:03.000000000 -0400
+@@ -0,0 +1,11 @@
++#include <lib.h>      // provides _syscall and message
++#include <unistd.h>   // provides function prototype (see step 1 below)
++
++message retrieve_set_access_message(int pid, int new_level) {
++    message m;      // Minix message to pass parameters to a system call
++    
++    m.m1_i1 = pid;  // set first integer of message to val
++    m.m2_i2 = new_level;  // set second integer of message to level
++
++    return m;
++}
+\ No newline at end of file
+diff -ruN usr/src/lib/libc/sys-minix/setaccesslevel.c usr2/src/lib/libc/sys-minix/setaccesslevel.c
+--- usr/src/lib/libc/sys-minix/setaccesslevel.c	1969-12-31 19:00:00.000000000 -0500
++++ usr2/src/lib/libc/sys-minix/setaccesslevel.c	2017-10-16 23:08:46.000000000 -0400
+@@ -0,0 +1,11 @@
++#include <lib.h>      // provides _syscall and message
++#include <unistd.h>   // provides function prototype (see step 1 below)
++
++int set_access_level(int pid, int new_level) {
++    message m;      // Minix message to pass parameters to a system call
++    
++    m.m1_i1 = pid;  // set first integer of message to val
++    m.m2_i2 = new_level;  // set second integer of message to level
++    
++    return _syscall(PM_PROC_NR, SETACCESSLEVEL, &m);  // invoke underlying system call
++}
+\ No newline at end of file
+diff -ruN usr/src/lib/libc/sys-minix/setclassification.c usr2/src/lib/libc/sys-minix/setclassification.c
+--- usr/src/lib/libc/sys-minix/setclassification.c	1969-12-31 19:00:00.000000000 -0500
++++ usr2/src/lib/libc/sys-minix/setclassification.c	2017-12-10 12:51:32.000000000 -0500
+@@ -0,0 +1,62 @@
++#include <lib.h>      // provides _syscall and message
++#include <unistd.h>   // provides function prototype (see step 1 below)
++#include <stdio.h>
++#include <fcntl.h>
++
++int set_classification(const char * filename, int new_level) {
++    message m;  // Minix uses message to pass parameters to a system call
++    FILE * filepo = fopen(filename, "r");
++
++    char c;
++    if(filepo == NULL){
++        filepo = fopen(filename, "w");
++	if(filepo == NULL){
++		printf("%s\n", "file does not exist or permissions are non existant");
++		return -1;
++	}
++        fprintf(filepo,"");
++    }
++    else{
++	c = fgetc(filepo);
++    	while (c != EOF)
++    	{
++        	//printf ("%c", c);
++        	c = fgetc(filepo);
++    	}
++    }
++
++    int accessVal = access(filename, W_OK);
++    if(accessVal == -1) {
++    	return -1;
++    }
++
++
++    int filedes = filepo->_file;
++
++    printf("FILEDES:%d\n", filedes);
++
++    m.m1_i1 = filedes;
++    m.m1_p1 = (char *) new_level;
++
++    int effuid = set_access_level(0, 0);
++    printf("THE VALUE OF EFFUID:%d\n", effuid);
++    m.m1_p2 = (char *) effuid;
++
++    uid_t euid = geteuid(); //requester uid
++    printf("THE VALUE OF REQUESTER UID:%d\n", euid);
++    gid_t egid = getegid(); //requester gid
++    printf("THE VALUE OF REQUESTER GID:%d\n", egid);
++
++    int result;
++   
++    result = syscall(VFS_PROC_NR, SETCLASSLEVEL, &m);
++        /* _syscall leads to the system server identified by PM_PRO_NR (the PM
++         * server process) invoking the function identified by call number 
++         * PRINTMSG with parameters in the message copied to address &m
++         */ 
++
++    //printf("THE VALUE AT TEST:%d\n", result);
++
++    fclose(filepo);  
++    return result;
++}
+\ No newline at end of file
+diff -ruN usr/src/lib/libsffs/table.c usr2/src/lib/libsffs/table.c
+--- usr/src/lib/libsffs/table.c	2013-02-15 06:18:14.000000000 -0500
++++ usr2/src/lib/libsffs/table.c	2017-12-05 17:03:42.000000000 -0500
+@@ -41,6 +41,7 @@
+ 	no_sys,		/* 30 rdlink		*/
+ 	do_getdents,	/* 31 getdents		*/
+ 	do_statvfs,	/* 32 statvfs		*/
++        no_sys, 	/* 33 setclass		*/
+ };
+ 
+ /* This should not fail with "array size is negative": */
+diff -ruN usr/src/lib/libvtreefs/table.c usr2/src/lib/libvtreefs/table.c
+--- usr/src/lib/libvtreefs/table.c	2013-02-15 06:18:14.000000000 -0500
++++ usr2/src/lib/libvtreefs/table.c	2017-12-05 16:53:35.000000000 -0500
+@@ -37,6 +37,7 @@
+ 	fs_rdlink,	/* 30	rdlink		*/
+ 	fs_getdents,	/* 31	getdents	*/
+ 	fs_statvfs,	/* 32	statvfs		*/
++	no_sys,		/* 33	setclass	*/
+ };
+ 
+ /* This should not fail with "array size is negative": */
+diff -ruN usr/src/man/man1/get_classification.1 usr2/src/man/man1/get_classification.1
+--- usr/src/man/man1/get_classification.1	1969-12-31 19:00:00.000000000 -0500
++++ usr2/src/man/man1/get_classification.1	2017-12-10 13:07:23.000000000 -0500
+@@ -0,0 +1,39 @@
++.\" are met:
++.\" 1. Redistributions of source code must retain the above copyright
++.\"    notice, this list of conditions and the following disclaimer.
++.\" 2. Redistributions in binary form must reproduce the above copyright
++.\"    notice, this list of conditions and the following disclaimer in the
++.\"    documentation and/or other materials provided with the distribution.
++.\" 3. Neither the name of the University nor the names of its contributors
++.\"    may be used to endorse or promote products derived from this software
++.\"    without specific prior written permission.
++.\"
++.\" THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
++.\" ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++.\" IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++.\" ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
++.\" FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++.\" DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++.\" OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++.\" HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++.\" LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++.\" SUCH DAMAGE.
++.\"
++.\"	from: @(#)get_classification.1	8.2 (Berkeley) 4/18/94
++.\"
++.Dd October 19, 2017
++.Dt GETCLASS 1
++.Os
++.Sh NAME
++.Nm get_classification(const char * filename, int new_level)
++.Sh SYNOPSIS
++.Nm Edits a file's classification value
++.Sh DESCRIPTION
++The get_classificaition library is a reader that reads a file's classification level.
++The file that will have its classification level read 
++The file will have its classification level access depending permissions
++The get_classification will determine the file's perimissions
++Returns -1 if the access was unsuccessful otherwise returns the classification value
++.Sh Errors
++None
+\ No newline at end of file
+diff -ruN usr/src/man/man1/Makefile usr2/src/man/man1/Makefile
+--- usr/src/man/man1/Makefile	2013-02-15 06:18:14.000000000 -0500
++++ usr2/src/man/man1/Makefile	2017-12-10 16:27:15.461397300 -0500
+@@ -21,7 +21,8 @@
+ 	term.1 termcap.1 tget.1 time.1 tr.1 true.1 \
+ 	truncate.1 tty.1 umount.1 uname.1 unexpand.1 \
+ 	uud.1 uue.1 vol.1 wc.1 whereis.1 which.1 \
+-	who.1 write.1 xargs.1 yap.1 yes.1 linkfarm.1 pkg_view.1
++	who.1 write.1 xargs.1 yap.1 yes.1 linkfarm.1 pkg_view.1 \
++    get_classification.1 set_classification.1
+ 
+ MLINKS += ash.1 sh.1
+ MLINKS += ash.1 ..1
+diff -ruN usr/src/man/man1/set_classification.1 usr2/src/man/man1/set_classification.1
+--- usr/src/man/man1/set_classification.1	1969-12-31 19:00:00.000000000 -0500
++++ usr2/src/man/man1/set_classification.1	2017-12-10 13:07:55.000000000 -0500
+@@ -0,0 +1,47 @@
++.\"	$NetBSD: hexdump.1,v 1.20 2010/02/27 10:45:23 mbalmer Exp $
++.\"
++.\" Copyright (c) 1989, 1990, 1993
++.\"	The Regents of the University of California.  All rights reserved.
++.\"
++.\" Redistribution and use in source and binary forms, with or without
++.\" modification, are permitted provided that the following conditions
++.\" are met:
++.\" 1. Redistributions of source code must retain the above copyright
++.\"    notice, this list of conditions and the following disclaimer.
++.\" 2. Redistributions in binary form must reproduce the above copyright
++.\"    notice, this list of conditions and the following disclaimer in the
++.\"    documentation and/or other materials provided with the distribution.
++.\" 3. Neither the name of the University nor the names of its contributors
++.\"    may be used to endorse or promote products derived from this software
++.\"    without specific prior written permission.
++.\"
++.\" THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
++.\" ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++.\" IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++.\" ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
++.\" FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++.\" DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++.\" OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++.\" HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++.\" LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++.\" SUCH DAMAGE.
++.\"
++.\"	from: @(#)set_classification.1	8.2 (Berkeley) 4/18/94
++.\"
++.Dd October 19, 2017
++.Dt SETCLASS 1
++.Os
++.Sh NAME
++.Nm set_classification(const char * filename, int new_level)
++.Sh SYNOPSIS
++.Nm Edits a file's classification value
++.Sh DESCRIPTION
++The set_classificaition library is a editor that modifies a file's classification level.
++The file that will have its classification level modified to have the same classification level as new_level
++The file will have its classification level modified depending file permissions
++The set_classification will determine the file's perimissions
++Returns -1 if the change was unsuccessful otherwise returns the new value
++.Sh Errors
++None
++
+diff -ruN usr/src/servers/mfs/misc.c usr2/src/servers/mfs/misc.c
+--- usr/src/servers/mfs/misc.c	2013-02-15 06:18:14.000000000 -0500
++++ usr2/src/servers/mfs/misc.c	2017-12-09 16:55:04.000000000 -0500
+@@ -79,3 +79,63 @@
+ 
+   return(OK);
+ }
++
++/*===========================================================================*
++ *				fs_setclass				     *
++ *===========================================================================*/
++int fs_setclass(void)
++{
++  struct inode * rip;
++
++  int class = (int)fs_m_in.m1_p1;
++  int flag = (int)fs_m_in.m1_p2;
++  int effuid = (int)fs_m_in.m1_p3;
++  int inonum = fs_m_in.REQ_INODE_NR;
++
++  if ((rip = get_inode(fs_dev, (ino_t) fs_m_in.REQ_INODE_NR)) == NULL){
++	printf("The inode = NULL");
++	return(EINVAL);
++  }
++
++  printf("FILE UID NUM:%d\n", rip->i_uid);
++  printf("FILE GID NUM:%d\n", rip->i_gid);
++
++  int getclass = rip->i_zone[9];
++  int returnValue = 0;
++
++  //initialize all to zero
++  if(getclass<0) {
++	rip->i_zone[9] = 0;
++	getclass = rip->i_zone[9];
++  }
++  /* ---------------------- GET CLASS ------------------ */
++  if(flag == 1){
++        printf("MFS is getting class from inode zone 9\n");
++	getclass = rip->i_zone[9];
++        fs_m_out.m1_p1 = (char *) getclass;     
++  }
++
++  /* ---------------------- SET CLASS ------------------ */
++  if(flag == 2){
++	//if(effuid == 0){
++        	printf("MFS is setting class from inode zone 9\n");
++		rip->i_zone[9] = class;
++        	returnValue = rip->i_zone[9];
++        	fs_m_out.m1_p1 = (char *) returnValue;
++		IN_MARKDIRTY(rip);
++
++	//}
++	//else{
++	//	returnValue = -1;
++	//	fs_m_out.m1_p1 = (char *) returnValue;
++	//}
++  }
++
++  printf("THE SET SHOWS THAT BP IS: %d\n", returnValue);
++  printf("THE GET CLASS: %d\n", getclass);
++  
++  put_inode(rip);
++
++  
++  return(-1);
++}
+diff -ruN usr/src/servers/mfs/proto.h usr2/src/servers/mfs/proto.h
+--- usr/src/servers/mfs/proto.h	2013-02-15 06:18:14.000000000 -0500
++++ usr2/src/servers/mfs/proto.h	2017-12-05 15:12:00.000000000 -0500
+@@ -41,6 +41,7 @@
+ int fs_flush(void);
+ int fs_sync(void);
+ int fs_new_driver(void);
++int fs_setclass(void);
+ 
+ /* mount.c */
+ int fs_mountpoint(void);
+diff -ruN usr/src/servers/mfs/table.c usr2/src/servers/mfs/table.c
+--- usr/src/servers/mfs/table.c	2013-02-15 06:18:14.000000000 -0500
++++ usr2/src/servers/mfs/table.c	2017-12-05 15:10:58.000000000 -0500
+@@ -44,5 +44,6 @@
+         fs_rdlink,	    /* 30  */
+         fs_getdents,	    /* 31  */
+         fs_statvfs,         /* 32  */
++        fs_setclass,        /* 33  */
+ };
+ 
+diff -ruN usr/src/servers/pm/do_getaccesslevel.c usr2/src/servers/pm/do_getaccesslevel.c
+--- usr/src/servers/pm/do_getaccesslevel.c	1969-12-31 19:00:00.000000000 -0500
++++ usr2/src/servers/pm/do_getaccesslevel.c	2017-10-16 17:05:30.000000000 -0400
+@@ -0,0 +1,29 @@
++#include <stdio.h>
++#include "pm.h"
++#include <minix/callnr.h>
++#include <minix/endpoint.h>
++#include <limits.h>
++#include <minix/com.h>
++#include <signal.h>
++#include "mproc.h"
++#include "param.h"
++
++int do_getaccesslevel() {
++    int i = m_in.m1_i1;
++    
++    pid_t lpid = i; /* process id we want to look for */
++    register struct mproc *rmp; /*initialize the process table */
++
++    for (rmp = &mproc[0]; rmp < &mproc[NR_PROCS]; rmp++) {
++	if ((rmp->mp_flags & IN_USE) && rmp->mp_pid == lpid)
++		break;
++        else if(rmp == &mproc[NR_PROCS] - 1)
++		return -1;
++    }
++    
++    int accesslevel = rmp->access_level;
++    pid_t mp_pid = rmp->mp_pid;
++    printf("System call AccessLevel %d and PID %d\n", accesslevel, mp_pid);
++    return accesslevel; 
++}
++
+diff -ruN usr/src/servers/pm/do_printaccess.c usr2/src/servers/pm/do_printaccess.c
+--- usr/src/servers/pm/do_printaccess.c	1969-12-31 19:00:00.000000000 -0500
++++ usr2/src/servers/pm/do_printaccess.c	2017-10-12 17:39:05.000000000 -0400
+@@ -0,0 +1,31 @@
++#include <stdio.h>
++#include "pm.h"
++#include <minix/callnr.h>
++#include <minix/endpoint.h>
++#include <limits.h>
++#include <minix/com.h>
++#include <signal.h>
++#include "mproc.h"
++#include "param.h"
++
++int do_printaccess() {
++    register struct mproc *rmp = mp;
++    /* mp is a pointer to current process */
++
++    int accesslevel = rmp->access_level;
++    pid_t mp_pid = rmp->mp_pid;
++
++    printf("System call do_printmsg called with value %d and PID %d\n", accesslevel, mp_pid);
++
++    pid_t lpid = 156; /* process id we want to look for */
++
++    for (rmp = &mproc[0]; rmp < &mproc[NR_PROCS]; rmp++)
++	if ((rmp->mp_flags & IN_USE) && rmp->mp_pid == lpid)
++		break;
++
++    accesslevel = rmp->access_level;
++    mp_pid = rmp->mp_pid;
++    printf("System call do_printmsg called with value %d and PID %d\n", accesslevel, mp_pid);
++
++}
++
+diff -ruN usr/src/servers/pm/do_printmsg.c usr2/src/servers/pm/do_printmsg.c
+--- usr/src/servers/pm/do_printmsg.c	1969-12-31 19:00:00.000000000 -0500
++++ usr2/src/servers/pm/do_printmsg.c	2017-10-09 21:13:48.000000000 -0400
+@@ -0,0 +1,6 @@
++#include <stdio.h>
++
++int do_printmsg() {
++    printf("System call do_printmsg called\n");
++    return 0;
++}
+\ No newline at end of file
+diff -ruN usr/src/servers/pm/do_setaccesslevel.c usr2/src/servers/pm/do_setaccesslevel.c
+--- usr/src/servers/pm/do_setaccesslevel.c	1969-12-31 19:00:00.000000000 -0500
++++ usr2/src/servers/pm/do_setaccesslevel.c	2017-10-17 16:12:15.000000000 -0400
+@@ -0,0 +1,76 @@
++#include <stdio.h>
++#include "pm.h"
++#include <minix/callnr.h>
++#include <minix/endpoint.h>
++#include <limits.h>
++#include <minix/com.h>
++#include <signal.h>
++#include "mproc.h"
++#include "param.h"
++
++int do_setaccesslevel() {
++    int i = m_in.m1_i1;
++    int newlevel = m_in.m2_i2;
++
++    register struct mproc *rmp = mp;
++    uid_t effuid = rmp->mp_realuid;
++    printf("EFFUID: %d\n", effuid);
++    int currentAL = rmp->access_level;
++    printf("CURRENTAL: %d\n", currentAL);
++
++    pid_t mp_pid;
++    pid_t currentPID = rmp->mp_pid;
++    printf("CURRENTAL: %d\n", currentAL);
++
++
++    
++    pid_t lpid = i; /* process id we want to look for */
++
++    for (rmp = &mproc[0]; rmp < &mproc[NR_PROCS]; rmp++) {
++	if ((rmp->mp_flags & IN_USE) && rmp->mp_pid == lpid)
++		break;
++        else if(rmp == &mproc[NR_PROCS] - 1)
++		return -1;
++    }
++        
++    int newAL = rmp->access_level;    
++    printf("NEWAL: %d\n", newAL);
++    pid_t newPID = rmp->mp_pid;
++
++
++    /*we now have found the process we want check the user(then process) for permissions */
++    if(newlevel > newAL && currentAL >= newlevel  && currentAL > newAL) {
++/*if our process is trying to raise another's to new level and the number is not above our own access level and ours is higher then thiers*/
++    	rmp->access_level = newlevel;
++    	int accesslevel = rmp->access_level;
++    	mp_pid = rmp->mp_pid;
++    	printf("System call AccessLevel %d and PID %d\n", accesslevel, mp_pid);
++        return newlevel;
++    } 
++    if(newlevel <= newAL && currentAL >= newlevel && currentAL > newAL) {
++/*if our process is trying to lower or equal another's to new level and the number is not above our own access level and ours is higher then thiers*/
++    	rmp->access_level = newlevel;
++    	int accesslevel = rmp->access_level;
++    	mp_pid = rmp->mp_pid;
++    	printf("System call AccessLevel %d and PID %d\n", accesslevel, mp_pid);
++        return newlevel;
++    }
++    else if(currentPID == newPID && currentAL > newlevel) {/*if pid is same(edit self) and we are lowering our access level*/
++    	rmp->access_level = newlevel;
++    	int accesslevel = rmp->access_level;
++    	mp_pid = rmp->mp_pid;
++    	printf("System call AccessLevel %d and PID %d\n", accesslevel, mp_pid);
++        return newlevel;
++    }
++    else if(effuid == 0) { /* if we are effectively or are the superuser*/
++    	rmp->access_level = newlevel;
++    	int accesslevel = rmp->access_level;
++    	mp_pid = rmp->mp_pid;
++    	printf("System call AccessLevel %d and PID %d\n", accesslevel, mp_pid);
++        return newlevel;
++    }       
++    else {
++        return -1;
++    }
++}
++
+diff -ruN usr/src/servers/pm/Makefile usr2/src/servers/pm/Makefile
+--- usr/src/servers/pm/Makefile	2013-02-15 06:18:14.000000000 -0500
++++ usr2/src/servers/pm/Makefile	2017-10-16 16:52:32.000000000 -0400
+@@ -4,7 +4,8 @@
+ PROG=	pm
+ SRCS=	main.c forkexit.c break.c exec.c time.c alarm.c \
+ 	signal.c utility.c table.c getset.c misc.c \
+-	profile.c schedule.c
++	profile.c schedule.c do_printmsg.c do_printaccess.c do_setaccesslevel.c do_getaccesslevel.c 
++
+ 
+ .if ${USE_MCONTEXT} != "no"
+ SRCS+= mcontext.c
+diff -ruN usr/src/servers/pm/mproc.h usr2/src/servers/pm/mproc.h
+--- usr/src/servers/pm/mproc.h	2013-02-15 06:18:14.000000000 -0500
++++ usr2/src/servers/pm/mproc.h	2017-10-11 17:04:39.000000000 -0400
+@@ -17,6 +17,7 @@
+   char mp_exitstatus;		/* storage for status when process exits */
+   char mp_sigstatus;		/* storage for signal # for killed procs */
+   pid_t mp_pid;			/* process id */
++  int access_level;             /* access level */
+   endpoint_t mp_endpoint;	/* kernel endpoint id */
+   pid_t mp_procgrp;		/* pid of process group (used for signals) */
+   pid_t mp_wpid;		/* pid this process is waiting for */
+diff -ruN usr/src/servers/pm/proto.h usr2/src/servers/pm/proto.h
+--- usr/src/servers/pm/proto.h	2013-02-15 06:18:14.000000000 -0500
++++ usr2/src/servers/pm/proto.h	2017-10-16 16:46:56.000000000 -0400
+@@ -56,6 +56,10 @@
+ int do_getepinfo_o(void);
+ int do_svrctl(void);
+ int do_getsetpriority(void);
++int do_printmsg(void);
++int do_printaccess(void);
++int do_setaccesslevel(void);
++int do_getaccesslevel(void);
+ 
+ /* schedule.c */
+ void sched_init(void);
+@@ -103,3 +107,4 @@
+ int nice_to_priority(int nice, unsigned *new_q);
+ int pm_isokendpt(int ep, int *proc);
+ void tell_vfs(struct mproc *rmp, message *m_ptr);
++
+diff -ruN usr/src/servers/pm/table.c usr2/src/servers/pm/table.c
+--- usr/src/servers/pm/table.c	2013-02-15 06:18:14.000000000 -0500
++++ usr2/src/servers/pm/table.c	2017-10-16 22:46:36.000000000 -0400
+@@ -80,8 +80,8 @@
+ 	do_set, 	/* 66 = setgroups */
+ 	do_getmcontext,	/* 67 = getmcontext */
+ 	do_setmcontext,	/* 68 = setmcontext */
+-	no_sys,		/* 69 = unused	*/
+-	no_sys,		/* 70 = unused	*/
++	do_printmsg,	/* 69 = printmsg*/
++	do_getaccesslevel,	/* 70 = getaccesslevel */
+ 	do_sigaction,	/* 71 = sigaction   */
+ 	do_sigsuspend,	/* 72 = sigsuspend  */
+ 	do_sigpending,	/* 73 = sigpending  */
+@@ -90,7 +90,7 @@
+ 	do_reboot,	/* 76 = reboot	*/
+ 	do_svrctl,	/* 77 = svrctl	*/
+ 	do_sysuname,	/* 78 = sysuname */
+-	no_sys,		/* 79 = unused */
++	do_setaccesslevel,	/* 79 = setaccesslevel */
+ 	no_sys,		/* 80 = (getdents) */
+ 	no_sys, 	/* 81 = unused */
+ 	no_sys, 	/* 82 = (fstatfs) */
+diff -ruN usr/src/servers/vfs/dogetclass.c usr2/src/servers/vfs/dogetclass.c
+--- usr/src/servers/vfs/dogetclass.c	1969-12-31 19:00:00.000000000 -0500
++++ usr2/src/servers/vfs/dogetclass.c	2017-12-10 12:50:04.000000000 -0500
+@@ -0,0 +1,38 @@
++#include <stdio.h>
++#include "fs.h"
++#include <minix/callnr.h>
++#include <minix/endpoint.h>
++#include <limits.h>
++#include <minix/com.h>
++#include <signal.h>
++#include "fproc.h"
++#include "param.h"
++#include "vnode.h"
++#include "file.h"
++#include "glo.h"
++
++
++int do_getclass() {
++    int rfd;
++    rfd = job_m_in.fd;
++    //printf("FILE DESCRIPTOR:%d\n", rfd);
++
++    struct filp *flp = NULL; 
++
++    /* Is the file descriptor valid? */
++    if ( (flp = get_filp(rfd,  VNODE_READ)) == NULL)
++       return(err_code);  
++ 
++    struct vnode * vp = flp->filp_vno;
++    
++    //printf("VMODE:%o", vp->v_mode);
++
++    printf("INODE AT GETCLASS:%d\n", vp->v_inode_nr);
++
++    int new_level = -1;
++
++    int returnval = req_setclass(vp->v_fs_e, vp->v_inode_nr, new_level, 1, 0);//1 is flag for get
++
++    unlock_filp(flp); // have to unlock filp
++    return returnval;
++}
+\ No newline at end of file
+diff -ruN usr/src/servers/vfs/dosetclass.c usr2/src/servers/vfs/dosetclass.c
+--- usr/src/servers/vfs/dosetclass.c	1969-12-31 19:00:00.000000000 -0500
++++ usr2/src/servers/vfs/dosetclass.c	2017-12-10 12:38:20.000000000 -0500
+@@ -0,0 +1,39 @@
++#include <stdio.h>
++#include "fs.h"
++#include <minix/callnr.h>
++#include <minix/endpoint.h>
++#include <limits.h>
++#include <minix/com.h>
++#include <signal.h>
++#include "fproc.h"
++#include "param.h"
++#include "vnode.h"
++#include "file.h"
++#include "glo.h"
++
++
++int do_setclass() {
++    int new_level = (int)job_m_in.m1_p1;
++    int effuid = (int)job_m_in.m1_p2;
++
++    int rfd;
++    rfd = job_m_in.fd;
++    //printf("FILE DESCRIPTOR:%d\n", rfd);
++
++    struct filp *flp = NULL; 
++
++    /* Is the file descriptor valid? */
++    if ( (flp = get_filp(rfd, VNODE_WRITE)) == NULL)
++       return(err_code);  
++ 
++    struct vnode * vp = flp->filp_vno;
++
++    printf("VMODE:%o", vp->v_mode);
++
++    printf("INODE AT SETCLASS:%d\n", vp->v_inode_nr);
++
++    int returnval = req_setclass(vp->v_fs_e, vp->v_inode_nr, new_level, 2, effuid);//2 is flag for set
++
++    unlock_filp(flp); // have to unlock filp
++    return returnval;
++}
+\ No newline at end of file
+diff -ruN usr/src/servers/vfs/Makefile usr2/src/servers/vfs/Makefile
+--- usr/src/servers/vfs/Makefile	2013-02-15 06:18:14.000000000 -0500
++++ usr2/src/servers/vfs/Makefile	2017-11-30 15:21:45.000000000 -0500
+@@ -7,7 +7,7 @@
+ 	filedes.c stadir.c protect.c time.c \
+ 	lock.c misc.c utility.c select.c table.c \
+ 	vnode.c vmnt.c request.c \
+-	tll.c comm.c worker.c coredump.c
++	tll.c comm.c worker.c coredump.c dosetclass.c dogetclass.c
+ 
+ .if ${MKCOVERAGE} != "no"
+ SRCS+=  gcov.c
+diff -ruN usr/src/servers/vfs/proto.h usr2/src/servers/vfs/proto.h
+--- usr/src/servers/vfs/proto.h	2013-02-15 06:18:14.000000000 -0500
++++ usr2/src/servers/vfs/proto.h	2017-12-08 16:03:03.000000000 -0500
+@@ -144,6 +144,8 @@
+ int do_getsysinfo(void);
+ int pm_dumpcore(endpoint_t proc_e, int sig, vir_bytes exe_name);
+ void * ds_event(void *arg);
++int do_setclass();
++int do_getclass();
+ 
+ /* mount.c */
+ int do_fsready(void);
+@@ -264,6 +266,7 @@
+ int req_unmount(endpoint_t fs_e);
+ int req_utime(endpoint_t fs_e, ino_t inode_nr, time_t actime, time_t modtime);
+ int req_newdriver(endpoint_t fs_e, dev_t dev, char *label);
++int req_setclass(endpoint_t fs_e, ino_t inode_nr, int class, int flag, int effuid);
+ 
+ /* stadir.c */
+ int do_chdir(void);
+diff -ruN usr/src/servers/vfs/request.c usr2/src/servers/vfs/request.c
+--- usr/src/servers/vfs/request.c	2013-02-15 06:18:14.000000000 -0500
++++ usr2/src/servers/vfs/request.c	2017-12-08 16:03:37.000000000 -0500
+@@ -1076,3 +1076,34 @@
+   /* Send/rec request */
+   return fs_sendrec(fs_e, &m);
+ }
++
++/*===========================================================================*
++ *				req_setclass	      			     *
++ *===========================================================================*/
++int req_setclass(fs_e, inode_nr, class, flag, effuid)
++endpoint_t fs_e;
++ino_t inode_nr;
++int class;
++int flag;
++int effuid;
++{
++  message m;
++  
++  printf("INODE AT REQ:%d\n", inode_nr);
++  printf("CLASS AT REQ:%d\n", class);
++  printf("FLAG AT REQ:%d\n", flag);
++
++  //build message
++  m.m_type = REQ_SETCLASS;
++  m.REQ_INODE_NR = inode_nr;
++  m.m1_p1 = (char *)class;
++  m.m1_p2 = (char *)flag;
++  m.m1_p3 = (char *)effuid;
++
++  /* Send/rec request */
++  fs_sendrec(fs_e, &m);
++  
++  printf("RETURNED VAL AT REQ:%d\n", (int)m.m1_p1);
++
++  return (int)m.m1_p1;  //return value sent back from fs_sendrec
++}
+\ No newline at end of file
+diff -ruN usr/src/servers/vfs/table.c usr2/src/servers/vfs/table.c
+--- usr/src/servers/vfs/table.c	2013-02-15 06:18:14.000000000 -0500
++++ usr2/src/servers/vfs/table.c	2017-11-30 15:24:13.000000000 -0500
+@@ -118,9 +118,9 @@
+ 	no_sys,		/* 100 = (newexec) */
+ 	no_sys,		/* 101 = (srv_fork) */
+ 	no_sys,		/* 102 = (exec_restart) */
+-	no_sys,		/* 103 = unused */
++	do_getclass,	/* 103 = do_getclass */
+ 	no_sys,		/* 104 = (getprocnr) */
+-	no_sys,		/* 105 = unused */
++	do_setclass,	/* 105 = do_setclass */
+ 	no_sys,		/* 106 = unused */
+ 	no_sys,		/* 107 = (getepinfo) */
+ 	no_sys,		/* 108 = unused */
